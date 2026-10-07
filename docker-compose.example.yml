@@ -7,12 +7,18 @@ services:
     environment:
       - IONOS_API_PREFIX=${IONOS_API_PREFIX}
       - IONOS_API_SECRET=${IONOS_API_SECRET}
-      - POLL_INTERVAL=300
+      - CRON_SCHEDULE=*/15 * * * *
       - DEFAULT_TYPES=A
       - DEFAULT_TTL=60
       - TZ=Europe/Berlin
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Container runs as user 1000:1000; it also needs the host's "docker"
+    # group to be allowed to read the socket. Find the GID with
+    # `getent group docker` and put it here.
+    user: "1000:1000"
+    group_add:
+      - "<docker-gid-on-host>"
 
   # Example: any service on the same Docker host gets its DNS record
   # created and kept up to date automatically, just by adding the label.

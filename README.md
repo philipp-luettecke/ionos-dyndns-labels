@@ -6,8 +6,9 @@ based on a single label - **no manual browser confirmation**, unlike the
 [ionos-dyndns-docker](https://github.com/philipp-luettecke/ionos-dyndns-docker).
 
 It talks directly to the [IONOS DNS API](https://api.hosting.ionos.com/dns/v1)
-using an API key, watches the Docker socket for containers, and for every
-container carrying `ionos.dyndns.hostname` it:
+using an API key. On a schedule (`CRON_SCHEDULE`, same as
+`ionos-dyndns-docker`) it checks every running container, and for each one
+carrying `ionos.dyndns.hostname` it:
 
 1. finds the matching zone in your IONOS account,
 2. creates the DNS record if it doesn't exist yet,
@@ -61,8 +62,14 @@ services:
     environment:
       - IONOS_API_PREFIX=your-prefix
       - IONOS_API_SECRET=your-secret
+      - CRON_SCHEDULE=*/15 * * * *
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Runs as user 1000:1000; it also needs the host's "docker" group to
+    # read the socket. Find the GID with `getent group docker`.
+    user: "1000:1000"
+    group_add:
+      - "<docker-gid-on-host>"
 ```
 
 ```console
@@ -91,10 +98,11 @@ browser step.
 | `ionos.dyndns.type` | no | `A` | Comma-separated record types to maintain: `A`, `AAAA`, or both |
 | `ionos.dyndns.ttl` | no | `60` | TTL in seconds for created/updated records |
 
-Each label is read when the container **starts** (new containers are picked
-up immediately via Docker events) and re-checked every `POLL_INTERVAL`
-seconds for all currently running labeled containers, so an IP change is
-also picked up without restarting anything.
+Every run (once right when `ionos-dyndns-labels` itself starts, then again
+on every `CRON_SCHEDULE` tick) checks **all** currently running labeled
+containers. A newly started service gets its record on the next scheduled
+run at the latest, and an IP change is picked up for everyone without
+restarting anything.
 
 ## Settings (environment variables)
 
@@ -102,23 +110,48 @@ also picked up without restarting anything.
 | --- | --- | --- |
 | `IONOS_API_PREFIX` | - | **Required.** API key public prefix |
 | `IONOS_API_SECRET` | - | **Required.** API key secret |
+| `CRON_SCHEDULE` | `*/15 * * * *` | When to check labeled containers, in cron format (see below) |
 | `DEFAULT_TYPES` | `A` | Record type(s) used when a container has no `ionos.dyndns.type` label |
 | `DEFAULT_TTL` | `60` | TTL used when a container has no `ionos.dyndns.ttl` label |
-| `POLL_INTERVAL` | `300` | Seconds between full reconcile passes (catches IP changes) |
+| `TZ` | `UTC` | Your time zone, e.g. `Europe/Berlin`. Cron times are interpreted in this zone |
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` for per-check logging even when nothing changed |
 
-## Running unprivileged
+### The update schedule (cron format)
 
-The container runs as root by default because `/var/run/docker.sock` is
-normally only readable by root or the host's `docker` group. To run it as a
-non-root user instead, find the GID of that group on the host
-(`getent group docker`) and add it to the compose file:
+`CRON_SCHEDULE` consists of five fields separated by spaces:
+
+```
+┌───────── minute (0-59)
+│ ┌─────── hour (0-23)
+│ │ ┌───── day of month (1-31)
+│ │ │ ┌─── month (1-12)
+│ │ │ │ ┌─ day of week (0-7, Sunday = 0 or 7)
+│ │ │ │ │
+* * * * *
+```
+
+`*` means "every", `*/15` means "every 15th". If the expression is invalid,
+the container stops and prints an error in the log. All labeled containers
+are additionally reconciled once every time the container starts.
+
+## Running as user 1000:1000
+
+Like `ionos-dyndns-docker`, this image runs as root unless you tell it
+otherwise, but is designed to run as `1000:1000` instead (set via `user:` in
+the compose file, as in the quick start above). Since
+`/var/run/docker.sock` is normally only readable by root or the host's
+`docker` group, that user also needs to be a member of the host's `docker`
+group inside the container - find its GID with `getent group docker` on the
+host and set it as `group_add`:
 
 ```yaml
     user: "1000:1000"
     group_add:
       - "<docker-gid-on-host>"
 ```
+
+If you'd rather run it as root (skipping the `group_add` lookup), just drop
+both `user:` and `group_add:` from the compose file.
 
 ## What it does *not* do
 

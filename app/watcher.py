@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Watches the Docker socket for containers carrying an ionos.dyndns.hostname
-label and keeps the matching A/AAAA records at IONOS pointed at this host's
-current public IP - fully unattended, no Domain Connect browser confirmation.
+"""Checks every running container for an ionos.dyndns.hostname label and
+keeps the matching A/AAAA records at IONOS pointed at this host's current
+public IP - fully unattended, no Domain Connect browser confirmation.
+
+Run once per invocation; triggered on a schedule by supercronic, see
+entrypoint.sh.
 """
 
 import logging
 import os
 import sys
-import threading
 import time
 
-import docker
 import requests
+import docker
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -38,7 +40,6 @@ LABEL_TTL = "ionos.dyndns.ttl"
 
 DEFAULT_TYPES = os.environ.get("DEFAULT_TYPES", "A")
 DEFAULT_TTL = int(os.environ.get("DEFAULT_TTL", "60"))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "300"))
 
 IP_LOOKUP_URL = {
     "A": "https://api4.ipify.org",
@@ -138,44 +139,18 @@ def full_reconcile(client):
         reconcile_container(container)
 
 
-def poll_loop(client):
-    while True:
-        time.sleep(POLL_INTERVAL)
-        try:
-            full_reconcile(client)
-        except Exception:
-            log.exception("Periodic reconcile failed")
-
-
-def event_loop(client):
-    while True:
-        try:
-            for event in client.events(decode=True, filters={"type": "container", "event": "start"}):
-                container_id = event.get("id") or event.get("Actor", {}).get("ID")
-                if not container_id:
-                    continue
-                try:
-                    container = client.containers.get(container_id)
-                except docker.errors.NotFound:
-                    continue
-                if LABEL_HOSTNAME in container.labels:
-                    log.info("Container %s started, reconciling its labels", container.name)
-                    reconcile_container(container)
-        except Exception:
-            log.exception("Docker event stream interrupted, reconnecting in 5s")
-            time.sleep(5)
-
-
 def main():
-    client = docker.from_env()
-    log.info(
-        "Starting ionos-dyndns-labels (poll every %ss, default type %s, default ttl %ss)",
-        POLL_INTERVAL, DEFAULT_TYPES, DEFAULT_TTL,
-    )
+    try:
+        client = docker.from_env()
+        client.ping()
+    except docker.errors.DockerException as exc:
+        log.error(
+            "Cannot talk to the Docker socket (%s). Is it mounted, and can user %s read/write it "
+            "(see the README section on running as user 1000:1000)?",
+            exc, os.getuid(),
+        )
+        sys.exit(1)
     full_reconcile(client)
-
-    threading.Thread(target=poll_loop, args=(client,), daemon=True).start()
-    event_loop(client)
 
 
 if __name__ == "__main__":
