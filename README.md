@@ -6,9 +6,10 @@ based on a single label - **no manual browser confirmation**, unlike the
 [ionos-dyndns-docker](https://github.com/philipp-luettecke/ionos-dyndns-docker).
 
 It talks directly to the [IONOS DNS API](https://api.hosting.ionos.com/dns/v1)
-using an API key. On a schedule (`CRON_SCHEDULE`, same as
-`ionos-dyndns-docker`) it checks every running container, and for each one
-carrying `ionos.dyndns.hostname` it:
+using an API key. It reacts immediately when a labeled container starts
+(via Docker events), and additionally re-checks every running container on
+a schedule (`CRON_SCHEDULE`, same as `ionos-dyndns-docker`) to catch public
+IP changes. For each container carrying `ionos.dyndns.hostname` it:
 
 1. finds the matching zone in your IONOS account,
 2. creates the DNS record if it doesn't exist yet,
@@ -86,9 +87,9 @@ services:
       - ionos.dyndns.hostname=whoami.example.com
 ```
 
-`whoami.example.com` gets an A record pointing at this host's current public
-IP automatically, and is kept in sync from then on - no `setup` command, no
-browser step.
+The moment this container starts, `whoami.example.com` gets an A record
+pointing at this host's current public IP - no `setup` command, no browser
+step - and is kept in sync from then on.
 
 ## Labels
 
@@ -98,11 +99,15 @@ browser step.
 | `ionos.dyndns.type` | no | `A` | Comma-separated record types to maintain: `A`, `AAAA`, or both |
 | `ionos.dyndns.ttl` | no | `60` | TTL in seconds for created/updated records |
 
-Every run (once right when `ionos-dyndns-labels` itself starts, then again
-on every `CRON_SCHEDULE` tick) checks **all** currently running labeled
-containers. A newly started service gets its record on the next scheduled
-run at the latest, and an IP change is picked up for everyone without
-restarting anything.
+Labels are picked up two ways:
+
+- **Immediately** - a Docker event listener reconciles a container the
+  moment it starts, so a newly labeled service gets its record within
+  seconds, not at the next cron tick.
+- **On schedule** - every `CRON_SCHEDULE` run (plus once when
+  `ionos-dyndns-labels` itself starts) re-checks **all** currently running
+  labeled containers, which is what catches a changed public IP for
+  everyone, including services that haven't restarted.
 
 ## Settings (environment variables)
 
@@ -133,6 +138,11 @@ restarting anything.
 `*` means "every", `*/15` means "every 15th". If the expression is invalid,
 the container stops and prints an error in the log. All labeled containers
 are additionally reconciled once every time the container starts.
+
+Internally, the cron schedule and the Docker event listener run as two
+separate processes in the same container. If either one dies unexpectedly,
+the container exits so `restart: unless-stopped` brings both back up
+cleanly.
 
 ## Running as user 1000:1000
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Checks every running container for an ionos.dyndns.hostname label and
-keeps the matching A/AAAA records at IONOS pointed at this host's current
-public IP - fully unattended, no Domain Connect browser confirmation.
+"""Checks containers for an ionos.dyndns.hostname label and keeps the
+matching A/AAAA records at IONOS pointed at this host's current public IP -
+fully unattended, no Domain Connect browser confirmation.
 
-Run once per invocation; triggered on a schedule by supercronic, see
-entrypoint.sh.
+Two modes, both started by entrypoint.sh:
+- no arguments: reconcile all currently running labeled containers once and
+  exit. Triggered on a schedule by supercronic (catches IP changes).
+- --listen: stay running and reconcile a container the moment it starts
+  (catches newly added services immediately, without waiting for cron).
 """
 
 import logging
@@ -139,6 +142,28 @@ def full_reconcile(client):
         reconcile_container(container)
 
 
+def listen(client):
+    """Reconcile a container the instant it starts, for immediate updates
+    in between the regular cron-scheduled full_reconcile runs."""
+    log.info("Listening for newly started containers")
+    while True:
+        try:
+            for event in client.events(decode=True, filters={"type": "container", "event": "start"}):
+                container_id = event.get("id") or event.get("Actor", {}).get("ID")
+                if not container_id:
+                    continue
+                try:
+                    container = client.containers.get(container_id)
+                except docker.errors.NotFound:
+                    continue
+                if LABEL_HOSTNAME in container.labels:
+                    log.info("Container %s started, reconciling its labels", container.name)
+                    reconcile_container(container)
+        except Exception:
+            log.exception("Docker event stream interrupted, reconnecting in 5s")
+            time.sleep(5)
+
+
 def main():
     try:
         client = docker.from_env()
@@ -150,7 +175,11 @@ def main():
             exc, os.getuid(),
         )
         sys.exit(1)
-    full_reconcile(client)
+
+    if "--listen" in sys.argv:
+        listen(client)
+    else:
+        full_reconcile(client)
 
 
 if __name__ == "__main__":

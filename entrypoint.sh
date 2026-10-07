@@ -22,10 +22,26 @@ if ! supercronic -test $CRON_FILE; then
     exit 1
 fi
 
-log "INFO" "Everything seems to be fine now; I will update all labeled containers with schedule '$CRON_SCHEDULE' (TZ=${TZ:-UTC})"
-
 # Update once right at startup, then continue on the cron schedule
 log "INFO" "Reconciling all currently labeled containers"
 python3 /app/watcher.py
 
-exec supercronic $CRON_FILE
+log "INFO" "Watching Docker events for immediate updates, and re-checking everything on schedule '$CRON_SCHEDULE' (TZ=${TZ:-UTC})"
+
+# Two long-running processes side by side: the event listener reacts the
+# moment a labeled container starts, supercronic catches everything else
+# (e.g. a public IP change) on CRON_SCHEDULE. If either one dies, stop the
+# container so "restart: unless-stopped" brings both back up cleanly.
+python3 /app/watcher.py --listen &
+LISTEN_PID=$!
+
+supercronic $CRON_FILE &
+CRON_PID=$!
+
+trap 'kill -TERM $LISTEN_PID $CRON_PID 2>/dev/null' TERM INT
+
+wait -n $LISTEN_PID $CRON_PID
+EXIT_CODE=$?
+log "WARN" "One of the background processes exited (code $EXIT_CODE), stopping the container"
+kill $LISTEN_PID $CRON_PID 2>/dev/null
+exit $EXIT_CODE
