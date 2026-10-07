@@ -1,0 +1,22 @@
+services:
+  ionos-dyndns-labels:
+    build: .
+    # image: philippluettecke/ionos-dyndns-labels:latest
+    container_name: ionos-dyndns-labels
+    restart: unless-stopped
+    environment:
+      - IONOS_API_PREFIX=${IONOS_API_PREFIX}
+      - IONOS_API_SECRET=${IONOS_API_SECRET}
+      - POLL_INTERVAL=300
+      - DEFAULT_TYPES=A
+      - DEFAULT_TTL=60
+      - TZ=Europe/Berlin
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Example: any service on the same Docker host gets its DNS record
+  # created and kept up to date automatically, just by adding the label.
+  whoami:
+    image: traefik/whoami
+    labels:
+      - ionos.dyndns.hostname=whoami.example.com

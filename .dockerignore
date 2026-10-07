@@ -1,0 +1,6 @@
+.git
+.github
+.env
+README.md
+docker-compose*.yml
+__pycache__/
