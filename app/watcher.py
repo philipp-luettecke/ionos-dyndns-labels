@@ -13,6 +13,7 @@ Two modes, both started by entrypoint.sh:
 import logging
 import os
 import sys
+import threading
 import time
 
 import requests
@@ -43,6 +44,7 @@ LABEL_TTL = "ionos.dyndns.ttl"
 
 DEFAULT_TYPES = os.environ.get("DEFAULT_TYPES", "A")
 DEFAULT_TTL = int(os.environ.get("DEFAULT_TTL", "60"))
+DELETE_GRACE_PERIOD = int(os.environ.get("DELETE_GRACE_PERIOD", "60"))
 
 IP_LOOKUP_URL = {
     "A": "https://api4.ipify.org",
@@ -100,7 +102,7 @@ def reconcile_hostname(fqdn, record_types, ttl):
     zone_detail = requests.get(f"{API_URL}/{zone['id']}", headers=API_HEADERS, timeout=15).json()
     existing = [r for r in zone_detail["records"] if r["name"] == fqdn]
 
-    to_create, to_update = [], []
+    to_create = []
     for record_type in record_types:
         if record_type not in IP_LOOKUP_URL:
             log.warning("%s: unsupported record type %s (use A or AAAA)", fqdn, record_type)
@@ -112,7 +114,14 @@ def reconcile_hostname(fqdn, record_types, ttl):
             to_create.append({"name": fqdn, "type": record_type, "content": ip, "ttl": ttl})
         elif match["content"] != ip:
             log.info("%s %s: outdated (currently %s), updating to %s", fqdn, record_type, match["content"], ip)
-            to_update.append({"name": fqdn, "type": record_type, "content": ip, "ttl": ttl})
+            resp = requests.put(
+                f"{API_URL}/{zone['id']}/records/{match['id']}",
+                headers=API_HEADERS,
+                json={"name": fqdn, "type": record_type, "content": ip, "ttl": ttl},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            log.info("%s %s: successfully updated, now pointing at %s", fqdn, record_type, ip)
         else:
             log.info("%s %s: already up to date, pointing at %s", fqdn, record_type, ip)
 
@@ -121,11 +130,20 @@ def reconcile_hostname(fqdn, record_types, ttl):
         resp.raise_for_status()
         for record in to_create:
             log.info("%s %s: successfully created, now pointing at %s", fqdn, record["type"], record["content"])
-    if to_update:
-        resp = requests.patch(f"{API_URL}/{zone['id']}", headers=API_HEADERS, json=to_update, timeout=15)
+
+
+def delete_records_for_fqdn(fqdn, record_types):
+    zone = find_zone_for_fqdn(fqdn)
+    if not zone:
+        return
+
+    zone_detail = requests.get(f"{API_URL}/{zone['id']}", headers=API_HEADERS, timeout=15).json()
+    existing = [r for r in zone_detail["records"] if r["name"] == fqdn and r["type"] in record_types]
+
+    for record in existing:
+        resp = requests.delete(f"{API_URL}/{zone['id']}/records/{record['id']}", headers=API_HEADERS, timeout=15)
         resp.raise_for_status()
-        for record in to_update:
-            log.info("%s %s: successfully updated, now pointing at %s", fqdn, record["type"], record["content"])
+        log.info("%s %s: successfully deleted (was pointing at %s)", fqdn, record["type"], record["content"])
 
 
 def reconcile_container(container):
@@ -146,23 +164,68 @@ def full_reconcile(client):
         reconcile_container(container)
 
 
+def is_fqdn_still_labeled(client, fqdn):
+    containers = client.containers.list(filters={"status": "running"})
+    return any(fqdn == h for c in containers for h, _, _ in parse_labels(c.labels))
+
+
+def handle_destroy(client, container_name, labels):
+    """A labeled container was removed (recreated or decommissioned). Wait a
+    grace period - a redeploy with the same label looks identical at first -
+    and only delete the record(s) if nothing picked that label back up."""
+    for fqdn, types, _ in parse_labels(labels):
+        def check(fqdn=fqdn, types=types):
+            if is_fqdn_still_labeled(client, fqdn):
+                log.info("%s: still labeled on a running container, keeping the record(s)", fqdn)
+                return
+            log.info(
+                "%s: no longer labeled anywhere (container %s was removed), deleting its record(s)",
+                fqdn, container_name,
+            )
+            try:
+                delete_records_for_fqdn(fqdn, types)
+            except requests.HTTPError as exc:
+                log.error("%s: IONOS API error while deleting: %s", fqdn, exc)
+            except Exception:
+                log.exception("%s: unexpected error while deleting", fqdn)
+
+        threading.Timer(DELETE_GRACE_PERIOD, check).start()
+
+
 def listen(client):
     """Reconcile a container the instant it starts, for immediate updates
-    in between the regular cron-scheduled full_reconcile runs."""
-    log.info("Listening for newly started containers")
+    in between the regular cron-scheduled full_reconcile runs. Also deletes
+    a record once its label is gone from every running container (see
+    handle_destroy)."""
+    log.info("Listening for container start/destroy events")
     while True:
         try:
-            for event in client.events(decode=True, filters={"type": "container", "event": "start"}):
+            events = client.events(decode=True, filters={"type": "container", "event": ["start", "destroy"]})
+            for event in events:
                 container_id = event.get("id") or event.get("Actor", {}).get("ID")
-                if not container_id:
+                action = event.get("Action") or event.get("status")
+                if not container_id or not action:
                     continue
-                try:
-                    container = client.containers.get(container_id)
-                except docker.errors.NotFound:
-                    continue
-                if LABEL_HOSTNAME in container.labels:
-                    log.info("Container %s started, reconciling its labels", container.name)
-                    reconcile_container(container)
+
+                if action == "start":
+                    try:
+                        container = client.containers.get(container_id)
+                    except docker.errors.NotFound:
+                        continue
+                    if LABEL_HOSTNAME in container.labels:
+                        log.info("Container %s started, reconciling its labels", container.name)
+                        reconcile_container(container)
+
+                elif action == "destroy":
+                    attrs = event.get("Actor", {}).get("Attributes", {})
+                    if LABEL_HOSTNAME in attrs:
+                        name = attrs.get("name", container_id[:12])
+                        log.info(
+                            "Container %s removed, will delete its record(s) in %ss unless the label "
+                            "reappears (e.g. a redeploy)",
+                            name, DELETE_GRACE_PERIOD,
+                        )
+                        handle_destroy(client, name, attrs)
         except Exception:
             log.exception("Docker event stream interrupted, reconnecting in 5s")
             time.sleep(5)

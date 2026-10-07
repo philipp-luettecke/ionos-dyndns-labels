@@ -13,7 +13,9 @@ IP changes. For each container carrying `ionos.dyndns.hostname` it:
 
 1. finds the matching zone in your IONOS account,
 2. creates the DNS record if it doesn't exist yet,
-3. keeps it updated whenever your public IP changes.
+3. keeps it updated whenever your public IP changes,
+4. removes it again once the label is gone from every running container
+   (label removed, or the container itself removed).
 
 This only works for domains managed directly at IONOS (the classic
 "Domains & Hosting" DNS, not IONOS Cloud DNS).
@@ -109,6 +111,29 @@ Labels are picked up two ways:
   labeled containers, which is what catches a changed public IP for
   everyone, including services that haven't restarted.
 
+## Removing records
+
+Removing the `ionos.dyndns.hostname` label (or removing the container
+entirely) removes the matching record too - but not instantly: when a
+labeled container is removed, `ionos-dyndns-labels` waits
+`DELETE_GRACE_PERIOD` seconds and only deletes the record if, by then, no
+other running container has picked that hostname back up. This way a normal
+redeploy (`docker compose up -d` after an image update, same label) never
+causes a delete-then-recreate flap - only an actual label removal or
+decommission does.
+
+```console
+docker logs -f ionos-dyndns-labels
+# Container whoami removed, will delete its record(s) in 60s unless the label reappears (e.g. a redeploy)
+# whoami.example.com A: no longer labeled anywhere (container whoami was removed), deleting its record(s)
+# whoami.example.com A: successfully deleted (was pointing at 203.0.113.42)
+```
+
+This only reacts to the live container-removal event, so it requires the
+Docker event listener to be running (it always is, alongside the cron
+schedule, as described above) - a plain cron-only check has no way to tell
+"a container used to exist with this label" from "it never did".
+
 ## Settings (environment variables)
 
 | Variable | Default | Description |
@@ -118,6 +143,7 @@ Labels are picked up two ways:
 | `CRON_SCHEDULE` | `*/15 * * * *` | When to check labeled containers, in cron format (see below) |
 | `DEFAULT_TYPES` | `A` | Record type(s) used when a container has no `ionos.dyndns.type` label |
 | `DEFAULT_TTL` | `60` | TTL used when a container has no `ionos.dyndns.ttl` label |
+| `DELETE_GRACE_PERIOD` | `60` | Seconds to wait after a labeled container is removed before deleting its record, in case a redeploy picks the label back up |
 | `TZ` | `UTC` | Your time zone, e.g. `Europe/Berlin`. Cron times are interpreted in this zone |
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` for per-check logging even when nothing changed |
 
@@ -165,18 +191,21 @@ both `user:` and `group_add:` from the compose file.
 
 ## What it does *not* do
 
-- It never deletes or removes records - stopping a labeled container just
-  leaves its last known record in place.
+- A labeled container that's merely **stopped** (not removed) keeps its
+  record - deletion only triggers on an actual container removal (recreate
+  or decommission), see "Removing records" above.
 - It only manages `A`/`AAAA` records for the exact hostname in the label,
-  nothing else in the zone is touched.
+  nothing else in the zone is touched - a record it didn't create but that
+  happens to match name and type will be updated/deleted the same way,
+  though, so don't reuse a hostname that's also managed elsewhere.
 - It does not create the zone/domain itself - the domain must already be
   added to your IONOS account.
 
 ## Security note
 
-The API key in `IONOS_API_SECRET` can create and modify DNS records for
-every domain in your IONOS account. Keep it out of version control (e.g. via
-an `.env` file) the same way you would any other credential.
+The API key in `IONOS_API_SECRET` can create, modify and delete DNS records
+for every domain in your IONOS account. Keep it out of version control
+(e.g. via an `.env` file) the same way you would any other credential.
 
 ## Building the image yourself
 
