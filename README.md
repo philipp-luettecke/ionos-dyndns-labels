@@ -35,6 +35,10 @@ This only works for domains managed directly at IONOS (the classic
 
 For automatic updates without surprises use `1`. For fully reproducible setups pin an exact version like `1.2.3`.
 
+> No GitHub Release has been published yet, so only `dev` currently exists on
+> Docker Hub. Use `:dev` for now (see the quick start below); `latest`/`1`/
+> `1.2`/`1.2.3` appear once the first release is cut.
+
 ## Why this exists
 
 `domain-connect-dyndns` requires you to open a link and confirm access in
@@ -59,7 +63,7 @@ Create `docker-compose.yml`:
 ```yaml
 services:
   ionos-dyndns-labels:
-    image: philippluettecke/ionos-dyndns-labels:latest
+    image: philippluettecke/ionos-dyndns-labels:dev  # no stable release yet, see "Image tags"
     container_name: ionos-dyndns-labels
     restart: unless-stopped
     environment:
@@ -125,7 +129,7 @@ decommission does.
 ```console
 docker logs -f ionos-dyndns-labels
 # Container whoami removed, will delete its record(s) in 60s unless the label reappears (e.g. a redeploy)
-# whoami.example.com A: no longer labeled anywhere (container whoami was removed), deleting its record(s)
+# whoami.example.com: no longer labeled anywhere (container whoami was removed), deleting its record(s)
 # whoami.example.com A: successfully deleted (was pointing at 203.0.113.42)
 ```
 
