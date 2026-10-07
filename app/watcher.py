@@ -108,20 +108,24 @@ def reconcile_hostname(fqdn, record_types, ttl):
         ip = get_public_ip(record_type)
         match = next((r for r in existing if r["type"] == record_type), None)
         if match is None:
-            log.info("%s %s: no record yet -> creating, pointing at %s", fqdn, record_type, ip)
+            log.info("%s %s: no record yet, creating it with %s", fqdn, record_type, ip)
             to_create.append({"name": fqdn, "type": record_type, "content": ip, "ttl": ttl})
         elif match["content"] != ip:
-            log.info("%s %s: outdated (%s) -> updating to %s", fqdn, record_type, match["content"], ip)
+            log.info("%s %s: outdated (currently %s), updating to %s", fqdn, record_type, match["content"], ip)
             to_update.append({"name": fqdn, "type": record_type, "content": ip, "ttl": ttl})
         else:
-            log.debug("%s %s: up to date (%s)", fqdn, record_type, ip)
+            log.info("%s %s: already up to date, pointing at %s", fqdn, record_type, ip)
 
     if to_create:
         resp = requests.post(f"{API_URL}/{zone['id']}/records", headers=API_HEADERS, json=to_create, timeout=15)
         resp.raise_for_status()
+        for record in to_create:
+            log.info("%s %s: successfully created, now pointing at %s", fqdn, record["type"], record["content"])
     if to_update:
         resp = requests.patch(f"{API_URL}/{zone['id']}", headers=API_HEADERS, json=to_update, timeout=15)
         resp.raise_for_status()
+        for record in to_update:
+            log.info("%s %s: successfully updated, now pointing at %s", fqdn, record["type"], record["content"])
 
 
 def reconcile_container(container):
