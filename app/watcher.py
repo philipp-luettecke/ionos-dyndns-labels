@@ -123,7 +123,7 @@ def reconcile_hostname(fqdn, record_types, ttl):
             resp.raise_for_status()
             log.info("%s %s: successfully updated, now pointing at %s", fqdn, record_type, ip)
         else:
-            log.info("%s %s: already up to date, pointing at %s", fqdn, record_type, ip)
+            log.debug("%s %s: already up to date, pointing at %s", fqdn, record_type, ip)
 
     if to_create:
         resp = requests.post(f"{API_URL}/{zone['id']}/records", headers=API_HEADERS, json=to_create, timeout=15)

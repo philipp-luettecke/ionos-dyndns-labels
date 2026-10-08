@@ -3,9 +3,9 @@
 log() {
     local log_level=$1  # A string representing the log level provided by the user when calling the function
     local message=$2  # A string representing the message provided by the user when calling the function
-    local script_name=$(basename $0)  # The name of the script that is running
     local timestamp=$(date +"%Y-%m-%d %H:%M:%S")  # The current date and time at the time the function is called
-    echo "$timestamp [$log_level] [$script_name] $message"
+    # Same layout as watcher.py's own log lines, so the two interleave cleanly.
+    echo "$timestamp $log_level $message"
 }
 
 if [[ -z "${CRON_SCHEDULE}" ]]; then
@@ -35,7 +35,7 @@ log "INFO" "Watching Docker events for immediate updates, and re-checking everyt
 python3 /app/watcher.py --listen &
 LISTEN_PID=$!
 
-supercronic $CRON_FILE &
+supercronic -passthrough-logs -quiet $CRON_FILE &
 CRON_PID=$!
 
 trap 'kill -TERM $LISTEN_PID $CRON_PID 2>/dev/null' TERM INT
